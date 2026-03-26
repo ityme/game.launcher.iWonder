@@ -5,9 +5,55 @@ param (
     [string]$CLIENT_TYPE = "origin"
 )
 
-# --- 1. 路径初始化 ---
+
+
+# --- 1. 路径初始化与校验 ---
 $ConfigFilePath = Join-Path $PSScriptRoot "..\LOL_ROOT_PATH"
-$LOL_ROOT_PATH  = (Get-Content -Path $ConfigFilePath -Raw -Encoding UTF8).Trim()
+
+function Validate-LOL-Root-Path($path) {
+    if (-not (Test-Path $path)) { return $false }
+    # 校验必要子目录完整性
+    $RequiredDirs = "Cross", "Game", "Launcher", "LeagueClient"
+    foreach ($dir in $RequiredDirs) {
+        if (-not (Test-Path (Join-Path $path $dir))) { return $false }
+    }
+    # 路径合法性检查：不能包含中文
+    if ($path -match "[\u4e00-\u9fa5]") { return $false }
+    return $true
+}
+
+function Prompt-For-LOL-Root-Path() {
+    while ($true) {
+        Write-Host "`n[配置引导] 请输入英雄联盟 (LOL) 根目录路径：" -ForegroundColor Yellow
+        Write-Host "  示例: D:\Tencent\WeGameApps\League of Legends" -ForegroundColor Gray
+        Write-Host "  要求: 路径须 [完整] 且路径中 [不可包含中文], 请修改至符合要求后, 再进行后续操作" -ForegroundColor Cyan
+        
+        $NewPath = (Read-Host ">> 路径").Trim()
+        
+        if (Validate-LOL-Root-Path $NewPath) {
+            $NewPath | Set-Content -Path $ConfigFilePath -Encoding UTF8
+            Write-Host "[配置成功] 路径已写入配置文件。" -ForegroundColor Green
+            return $NewPath
+        } else {
+            Write-Host "[校验失败] 路径无效：请检查目录完整性或是否存在中文。" -ForegroundColor Red
+        }
+    }
+}
+
+# 逻辑触发
+if (-not (Test-Path $ConfigFilePath)) {
+    Write-Host "[初始设置] 未检测到 LOL_ROOT_PATH 配置文件。" -ForegroundColor Yellow
+    $LOL_ROOT_PATH = Prompt-For-LOL-Root-Path
+} else {
+    $LOL_ROOT_PATH = (Get-Content -Path $ConfigFilePath -Raw -Encoding UTF8).Trim()
+    if (-not (Validate-LOL-Root-Path $LOL_ROOT_PATH)) {
+        Write-Host "[配置错误] 检测到已保存的路径无效或包含非法字符。" -ForegroundColor Red
+        $LOL_ROOT_PATH = Prompt-For-LOL-Root-Path
+    }
+}
+
+
+
 
 $ACE_PATH               = Join-Path $LOL_ROOT_PATH "Game\AntiCheatExpert\SGuard\x64\SGuard64.exe"
 $LOL_CLIENT_ORIGIN_PATH = Join-Path $LOL_ROOT_PATH "Launcher\Client.exe"

@@ -1,0 +1,67 @@
+name: CI/CD
+
+on:
+  push:
+    tags: "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: pull repository
+        uses: actions/checkout@v4
+
+      - name: check files
+        run: |
+          ls -alh
+          tree .
+
+      - name: args setup
+        run: |
+          echo "PROJECT_NAME=$(basename ${{ github.repository }})" >> $GITHUB_ENV
+          echo "TAG_NAME=$(basename ${{ github.ref }})" >> $GITHUB_ENV
+          echo "RELEASE_NAME=$(basename ${{ github.repository }})-$(basename ${{ github.ref }})" >> $GITHUB_ENV
+
+      - name: check args
+        run: |
+          echo "PROJECT_NAME=$PROJECT_NAME"
+          echo "TAG_NAME=$TAG_NAME"
+          echo "RELEASE_NAME=$RELEASE_NAME"
+
+      - name: create temporary workspace
+        run: |
+          mkdir _temp_workspace
+          mkdir _temp_release_assets
+
+      - name: build temporary workspace
+        run: |
+          mv core _temp_workspace/
+          mv *.bat _temp_workspace/
+          mv LICENSE _temp_workspace/
+          mv README.md _temp_workspace/
+
+      - name: convert line endings LF -> CRLF
+        run: |
+          sed -i 's/$/\r/' _temp_workspace/*.bat
+
+      - name: build release assets
+        run: |
+          cd _temp_workspace
+          zip -r $RELEASE_NAME.zip ./*
+          mv $RELEASE_NAME.zip ../_temp_release_assets/
+          cd ..
+
+      - name: check files
+        run: |
+          ls -alh
+          tree .
+
+      - name: upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: _temp_release_assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
