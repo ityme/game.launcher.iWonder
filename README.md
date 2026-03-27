@@ -21,6 +21,7 @@ lol.launcher.iWonder/
 ├── LOL_ROOT_PATH              # 💡 自动生成：存放你的游戏安装路径 (需全英文)
 ├── lol-launcher-by-origin.bat  # 🚀 双击启动：官方原生客户端模式
 ├── lol-launcher-by-wegame.bat  # 🚀 双击启动：WeGame 客户端模式
+├── lol-launcher-by-akari.bat  # 🚀 双击启动：Akari 客户端模式
 ├── README.md                  # 本说明文档
 └── core/
     └── lol-launcher.ps1       # ⚙️ 核心调度引擎
@@ -50,6 +51,8 @@ lol.launcher.iWonder/
     *(适用于直接弹出英雄联盟登录框，不经过 WeGame 的玩家)*
 *   **方案 B：WeGame 模式** 👉 双击 `lol-launcher-by-wegame.bat`
     *(适用于习惯从 WeGame 选区、使用官方助手的玩家)*
+*   **方案 C：Akari 模式** 👉 双击 `lol-launcher-by-akari.bat`
+    *(适用于使用 Akari 客户端的玩家，提供更轻量化的启动体验)*
 
 ---
 

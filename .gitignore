@@ -104,4 +104,4 @@ yarn-error.log*
 **/tmp/
 **/temp/
 # 用于临时存放LOL启动根路径的文件
-LOL_ROOT_PATH
+config.json
