@@ -1,0 +1,529 @@
+From b51929f23e8dbb5ed11379630ec0c9defd5cde2d Mon Sep 17 00:00:00 2001
+From: yceachan <yceachan@foxmail.com>
+Date: Wed, 13 May 2026 08:18:27 +0800
+Subject: [PATCH] feat(security): add skip-UAC scheduled task path + harden
+ config.json ACL
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Original launcher triggers UAC every run because PS1 calls Start-Process
+on SGuard64.exe (Tencent anti-cheat) which requires High integrity level.
+This change introduces a Microsoft-documented Task Scheduler path so
+end users authorize once, then run silently — no UAC bypass technique used.
+
+Changes:
+- 3 launcher bats: fix ERRORLEVEL false-positive (was reporting
+  any non-zero PS1 exit as missing core file); add dual-path logic
+  preferring schtasks /run over direct powershell, with fallback.
+- core/setup-scheduled-tasks.ps1: register 3 tasks (wegame/akari/origin)
+  with RunLevel=Highest + LogonType=Interactive, harden config.json ACL
+  via icacls to close the local privilege-escalation chain where a writable
+  config.json could redirect Start-Process to arbitrary executables.
+- core/uninstall-scheduled-tasks.ps1: symmetric removal + ACL reset.
+- setup-skip-uac.bat / uninstall-skip-uac.bat: user-facing UAC entry points
+  via Start-Process -Verb RunAs.
+- changelog/yceachan/20260513/README.md: design notes, security review,
+  and the explicit list of UAC bypass techniques NOT used (T1548.002 etc.).
+---
+ changelog/yceachan/20260513/README.md | 169 ++++++++++++++++++++++++++
+ core/setup-scheduled-tasks.ps1        |  85 +++++++++++++
+ core/uninstall-scheduled-tasks.ps1    |  43 +++++++
+ lol-launcher-by-akari.bat             |  27 ++--
+ lol-launcher-by-origin.bat            |  26 +++-
+ lol-launcher-by-wegame.bat            |  26 +++-
+ setup-skip-uac.bat                    |  16 +++
+ uninstall-skip-uac.bat                |  16 +++
+ 8 files changed, 389 insertions(+), 19 deletions(-)
+ create mode 100644 changelog/yceachan/20260513/README.md
+ create mode 100644 core/setup-scheduled-tasks.ps1
+ create mode 100644 core/uninstall-scheduled-tasks.ps1
+ create mode 100644 setup-skip-uac.bat
+ create mode 100644 uninstall-skip-uac.bat
+
+diff --git a/changelog/yceachan/20260513/README.md b/changelog/yceachan/20260513/README.md
+new file mode 100644
+index 0000000..ea2b1b3
+--- /dev/null
++++ b/changelog/yceachan/20260513/README.md
+@@ -0,0 +1,169 @@
++---
++title: 免 UAC 启动改造
++tags: [security, uac, scheduled-task, powershell, bat]
++desc: 通过 Task Scheduler 让 SGuard64 等子进程继承高完整性级别，避免每次启动 LOL 都弹 UAC，同时加固 config.json 权限。
++update: 2026-05-13
++---
++
++
++# 免 UAC 启动改造
++
++> [!note]
++> **Ref:**
++> - 原始项目：[iWonder-byte/lol.launcher.iWonder](https://github.com/iWonder-byte/lol.launcher.iWonder) v1.2.0
++> - MITRE ATT&CK T1548.002（明确**不采用**的绕过技术，仅作边界说明）
++
++## 一、背景与动机
++
++原启动器双击运行时，PS1 内部通过 `Start-Process` 调起 `SGuard64.exe`（腾讯反作弊驱动）以及 `WeGameLauncher\launcher.exe` 等子进程，这些进程在 Windows 安全模型下需要 **High** 完整性级别才能加载，因此每次启动都会触发一次 UAC 弹窗。
++
++本次改动的目标：**在不违反 Windows 安全模型、不使用任何 UAC bypass 技术的前提下，把"每次启动弹窗"降为"一次性配置 + 后续静默"**。
++
++## 二、安全审查（原始 v1.2.0）
++
++| 项 | 评级 | 说明 |
++|----|------|------|
++| `lol-launcher-by-*.bat` 中 `-ExecutionPolicy Bypass` | 🟡 可接受 | 仅本次会话有效，未修改系统策略 |
++| `"%~dp0core\lol-launcher.ps1"` 路径解析 | 🟢 安全 | 用脚本所在目录，避免相对路径劫持 |
++| `%ERRORLEVEL% NEQ 0` 误报逻辑 | 🔴 缺陷 | PS1 因任何原因非零退出都会被报成"找不到核心文件"，误导用户 |
++| `lol-launcher.ps1` 中 `Read-Host` 路径直接写入 `config.json` 并被 `Start-Process` 启动 | ⚠️ 风险 | 本地特权升级链：他人若能写 `config.json`，可让启动器代为执行任意 EXE |
++| `Start-Process -FilePath $ACE_PATH` 启动 SGuard64 | ℹ️ 触发 UAC | 这是反作弊驱动本身的提权要求，不是启动器的问题 |
++| `iex` / `Invoke-Expression` / 网络下载执行 | 🟢 无 | 整体可控 |
++
++## 三、本次改动清单
++
++### 3.1 已修改：3 个启动器 bat
++
++`lol-launcher-by-{wegame,akari,origin}.bat`
++
++```mermaid
++flowchart TD
++    A["双击 bat"] --> B{"核心 PS1 是否存在?"}
++    B -- 否 --> X["输出 ENV ERROR 并 pause"]
++    B -- 是 --> C{"对应计划任务是否已注册?"}
++    C -- 是 --> D["schtasks /run /tn LolLauncher_XXX (免 UAC)"]
++    C -- 否 --> E["powershell -File lol-launcher.ps1 (传统路径,弹 UAC)"]
++```
++
++**关键改动**：
++
++1. **修复 ERRORLEVEL 误报**：把"核心文件存在性"校验单独提前到 `if not exist`，避免把 PS1 业务退出码当成"文件缺失"。
++2. **引入双路径**：优先 `schtasks /run`，失败时回落到原有 `powershell -File` 调用 —— 即便用户没装计划任务，bat 仍然能用。
++3. **任务名约定**：`LolLauncher_Wegame` / `LolLauncher_Akari` / `LolLauncher_Origin`。
++
++### 3.2 新增：`core/setup-scheduled-tasks.ps1`
++
++一次性安装器。功能：
++
++1. 注册上述 3 个计划任务，参数：
++   - `RunLevel = Highest`（高完整性级别，免 UAC 的关键）
++   - `LogonType = Interactive`（保留窗口可见，PS1 内有 `Read-Host` 引导）
++   - `WorkingDirectory = $ProjectRoot`（防止 `$PSScriptRoot\..\config.json` 在某些上下文解析失败）
++   - `UserId = $env:USERDOMAIN\$env:USERNAME`（以原始用户身份运行，而非管理员令牌）
++2. 加固 `config.json` ACL：
++   - `icacls /inheritance:r`（切断目录继承）
++   - 仅授予 `当前用户 / SYSTEM / Administrators` 完全控制
++   - 解决 §二 中表格里标 ⚠️ 的"他人可写 → 任意 EXE 启动"链
++
++需以管理员身份运行。
++
++### 3.3 新增：`core/uninstall-scheduled-tasks.ps1`
++
++对称的卸载器。功能：
++
++1. 移除上述 3 个计划任务（不存在则跳过）
++2. `icacls /reset` + `/inheritance:e` 恢复 `config.json` ACL 继承
++3. 启动器 bat 因为有 fallback 逻辑，**无需修改**即可自动回落到传统路径
++
++### 3.4 新增：`setup-skip-uac.bat` / `uninstall-skip-uac.bat`
++
++用户友好入口，通过 `Start-Process -Verb RunAs` 自动唤起 UAC 提升后再执行对应 PS1。
++
++## 四、为什么 Task Scheduler 能做到"免 UAC"
++
++> 注意：这是 Microsoft 文档化支持的合法机制，**不是**绕过 UAC。
++
++```mermaid
++sequenceDiagram
++    autonumber
++    participant U as 用户
++    participant B as bat (中完整性)
++    participant S as schtasks.exe
++    participant T as Task Scheduler 服务
++    participant P as powershell.exe (高完整性)
++    participant A as SGuard64.exe
++
++    rect rgb(220, 240, 255)
++    Note over U,T: 一次性安装阶段
++    U->>B: 双击 setup-skip-uac.bat
++    B->>U: 弹一次 UAC
++    U->>B: 授权
++    B->>T: Register-ScheduledTask (RunLevel=Highest)
++    end
++
++    rect rgb(230, 255, 220)
++    Note over U,A: 后续每次启动
++    U->>B: 双击 lol-launcher-by-wegame.bat
++    B->>S: schtasks /run /tn LolLauncher_Wegame
++    S->>T: 请求触发已注册任务
++    T->>P: 以已授权身份创建进程 (无 UAC)
++    P->>A: Start-Process SGuard64 (继承高完整性)
++    end
++```
++
++**核心原理**：计划任务注册时已经获得用户授权（一次 UAC），之后 Task Scheduler 服务有权直接以授权身份创建高完整性进程，**不再需要二次确认**。
++
++## 五、明确不采用的技术（安全边界）
++
++| 技术 | 类别 | 为何不采用 |
++|------|------|------------|
++| `fodhelper.exe` / `computerdefaults.exe` / `sdclt.exe` 注册表劫持 | MITRE T1548.002 | 这是恶意软件 UAC bypass 技术，Defender/EDR 会告警 |
++| 调低系统 UAC 通知级别 | 系统设置 | 全局降低防护，影响所有程序，**强烈不推荐** |
++| 将 SGuard64 加入 AutoElevate 白名单 | —— | Windows 不允许第三方程序加入此白名单，宣称能做到的均为 bypass 技术 |
++
++## 六、用户操作指引
++
++### 安装（仅一次）
++
++1. 双击项目根目录 `setup-skip-uac.bat`
++2. 弹出 UAC 提示，点击"是"
++3. 看到 3 行 `[OK] 已注册任务: ...` 即完成
++4. 后续双击 `lol-launcher-by-*.bat` 不再弹 UAC
++
++### 卸载
++
++1. 双击项目根目录 `uninstall-skip-uac.bat`
++2. 弹出 UAC 提示，点击"是"
++3. 计划任务被移除，`config.json` ACL 恢复继承
++4. 启动器 bat 自动回落到传统路径（每次启动弹一次 UAC）
++
++## 七、Windows 兼容性约定（踩坑记录）
++
++本次开发在 WSL 下完成，初次落地到 Windows 时遇到两类编码事故，固化为后续约束：
++
++| 文件类型 | 约束 | 原因 |
++|----------|------|------|
++| `.ps1` | **必须 UTF-8 with BOM** (`EF BB BF`) | Windows PowerShell 5.1 解析无 BOM 脚本时默认走系统 ANSI codepage（中文 Windows 是 CP936），中文字符串会被错误解码，触发 `Missing argument in parameter list` 等解析错误 |
++| `.bat` | **正文仅 ASCII，中文输出移交 PS1** | `cmd.exe` 启动时按系统 codepage 解析整个 .bat 文件；脚本内 `chcp 65001` 对**当前正在解析的文件**无效，中文行会被切成乱码命令 |
++
++实操：
++
++- 原始 `core/lol-launcher.ps1` 自带 BOM —— 跟随项目约定。
++- 4 个 bat（3 launcher + 2 skip-uac entry）所有用户面输出已英文化；需要中文 banner 时由 PS1 端 `Write-Host` 输出。
++
++## 八、变更文件一览
++
++```
++项目根/
++├── lol-launcher-by-wegame.bat              [改] 双路径 + 修复 ERRORLEVEL 误报
++├── lol-launcher-by-akari.bat               [改] 同上
++├── lol-launcher-by-origin.bat              [改] 同上
++├── setup-skip-uac.bat                      [新] 安装入口 (UAC)
++├── uninstall-skip-uac.bat                  [新] 卸载入口 (UAC)
++├── core/
++│   ├── setup-scheduled-tasks.ps1           [新] 注册任务 + 加固 ACL
++│   └── uninstall-scheduled-tasks.ps1       [新] 移除任务 + 恢复 ACL
++└── changelog/yceachan/20260513/
++    ├── README.md                           [新] 本说明文档
++    └── *.patch                             [新] 生成的 patch 文件
++```
+diff --git a/core/setup-scheduled-tasks.ps1 b/core/setup-scheduled-tasks.ps1
+new file mode 100644
+index 0000000..928365f
+--- /dev/null
++++ b/core/setup-scheduled-tasks.ps1
+@@ -0,0 +1,85 @@
++﻿# ==========================================================
++# 一次性安装：注册三个免 UAC 计划任务，并加固 config.json ACL
++# 必须以管理员身份运行（通过 setup-skip-uac.bat 自动唤起 UAC）
++# ==========================================================
++
++#Requires -RunAsAdministrator
++
++$ErrorActionPreference = "Stop"
++
++function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
++    Write-Host ("[{0}] {1}" -f $Tag, $Msg) -ForegroundColor $Color
++}
++
++# --- 路径解析 ---
++$ProjectRoot = Split-Path -Parent $PSScriptRoot
++$Ps1Path     = Join-Path $PSScriptRoot "lol-launcher.ps1"
++$ConfigPath  = Join-Path $ProjectRoot "config.json"
++
++if (-not (Test-Path $Ps1Path)) {
++    Log-State "FATAL" "找不到核心脚本: $Ps1Path" "Red"
++    pause
++    exit 1
++}
++
++Log-State "Setup" "项目根目录: $ProjectRoot" "Cyan"
++
++# --- 1. 注册三个计划任务 ---
++$Tasks = @(
++    @{ Name = "LolLauncher_Wegame"; ClientType = "wegame" },
++    @{ Name = "LolLauncher_Akari";  ClientType = "akari"  },
++    @{ Name = "LolLauncher_Origin"; ClientType = "origin" }
++)
++
++# 任务实际以谁的身份运行：用启动 UAC 之前的"原始用户"，而不是当前管理员令牌。
++# WhoAmI 在被 RunAs 提权后仍返回原用户名时，可直接用 $env:USERNAME；
++# 但稳妥起见，从 LOGONSERVER + USERDOMAIN 组合，并回退到 USERNAME。
++$RunAsUser = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
++
++foreach ($t in $Tasks) {
++    $Action = New-ScheduledTaskAction `
++        -Execute "powershell.exe" `
++        -Argument "-ExecutionPolicy Bypass -File `"$Ps1Path`" -CLIENT_TYPE $($t.ClientType)" `
++        -WorkingDirectory $ProjectRoot
++
++    $Principal = New-ScheduledTaskPrincipal `
++        -UserId $RunAsUser `
++        -LogonType Interactive `
++        -RunLevel Highest
++
++    $Settings = New-ScheduledTaskSettingsSet `
++        -AllowStartIfOnBatteries `
++        -DontStopIfGoingOnBatteries `
++        -ExecutionTimeLimit ([TimeSpan]::Zero) `
++        -MultipleInstances IgnoreNew
++
++    if (Get-ScheduledTask -TaskName $t.Name -ErrorAction SilentlyContinue) {
++        Unregister-ScheduledTask -TaskName $t.Name -Confirm:$false
++        Log-State "Refresh" "已移除旧任务: $($t.Name)" "DarkGray"
++    }
++
++    Register-ScheduledTask `
++        -TaskName $t.Name `
++        -Action $Action `
++        -Principal $Principal `
++        -Settings $Settings `
++        -Description "LoL 启动器（CLIENT_TYPE=$($t.ClientType)）— 免 UAC 执行" `
++        | Out-Null
++
++    Log-State "OK" "已注册任务: $($t.Name) (RunLevel=Highest, User=$RunAsUser)" "Green"
++}
++
++# --- 2. 加固 config.json ACL ---
++if (Test-Path $ConfigPath) {
++    # 移除继承 + 仅授予当前用户、SYSTEM、Administrators 完全控制
++    & icacls.exe $ConfigPath /inheritance:r | Out-Null
++    & icacls.exe $ConfigPath /grant "$($env:USERNAME):F" "SYSTEM:F" "Administrators:F" | Out-Null
++    Log-State "OK" "已加固 config.json ACL（仅 $env:USERNAME / SYSTEM / Administrators 可写）" "Green"
++} else {
++    Log-State "Warn" "config.json 尚不存在；首次运行启动器生成后可重跑本脚本完成 ACL 加固。" "Yellow"
++}
++
++Write-Host ""
++Log-State "Done" "设置完毕。后续双击 lol-launcher-by-*.bat 将不再弹 UAC。" "Cyan"
++Write-Host ""
++pause
+diff --git a/core/uninstall-scheduled-tasks.ps1 b/core/uninstall-scheduled-tasks.ps1
+new file mode 100644
+index 0000000..e036a62
+--- /dev/null
++++ b/core/uninstall-scheduled-tasks.ps1
+@@ -0,0 +1,43 @@
++﻿# ==========================================================
++# 卸载：移除 3 个计划任务，并恢复 config.json 的 ACL 继承
++# 必须以管理员身份运行（通过 uninstall-skip-uac.bat 自动唤起 UAC）
++# ==========================================================
++
++#Requires -RunAsAdministrator
++
++$ErrorActionPreference = "Stop"
++
++function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
++    Write-Host ("[{0}] {1}" -f $Tag, $Msg) -ForegroundColor $Color
++}
++
++$ProjectRoot = Split-Path -Parent $PSScriptRoot
++$ConfigPath  = Join-Path $ProjectRoot "config.json"
++
++Log-State "Uninstall" "项目根目录: $ProjectRoot" "Cyan"
++
++# --- 1. 卸载三个计划任务 ---
++$TaskNames = @("LolLauncher_Wegame", "LolLauncher_Akari", "LolLauncher_Origin")
++
++foreach ($name in $TaskNames) {
++    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
++        Unregister-ScheduledTask -TaskName $name -Confirm:$false
++        Log-State "OK" "已移除任务: $name" "Green"
++    } else {
++        Log-State "Skip" "任务不存在: $name" "DarkGray"
++    }
++}
++
++# --- 2. 恢复 config.json ACL 继承 ---
++if (Test-Path $ConfigPath) {
++    & icacls.exe $ConfigPath /reset | Out-Null
++    & icacls.exe $ConfigPath /inheritance:e | Out-Null
++    Log-State "OK" "已恢复 config.json 的 ACL 继承（清除自定义权限）" "Green"
++} else {
++    Log-State "Skip" "config.json 不存在，无需恢复 ACL" "DarkGray"
++}
++
++Write-Host ""
++Log-State "Done" "卸载完毕。后续双击 lol-launcher-by-*.bat 将回落到传统启动方式（会弹 UAC）。" "Cyan"
++Write-Host ""
++pause
+diff --git a/lol-launcher-by-akari.bat b/lol-launcher-by-akari.bat
+index 1cf8c99..cc59ab2 100644
+--- a/lol-launcher-by-akari.bat
++++ b/lol-launcher-by-akari.bat
+@@ -1,17 +1,30 @@
+ @echo off
++setlocal
+ set "CLIENT_TYPE=akari"
++set "TASK_NAME=LolLauncher_Akari"
++set "CORE_PS1=%~dp0core\lol-launcher.ps1"
+ 
+-
+-powershell -ExecutionPolicy Bypass -File "%~dp0core\lol-launcher.ps1" -CLIENT_TYPE "%CLIENT_TYPE%"
+-
+-
+-if %ERRORLEVEL% NEQ 0 (
++REM --- 1. 核心文件存在性校验 ---
++if not exist "%CORE_PS1%" (
+     echo.
+     echo [ENV ERROR]: can't find core file: lol-launcher.ps1
+     echo   Please run the .bat file from its original project folder.
+     echo     Do not move or copy it elsewhere!
+     echo.
+     pause
+-) else (
+-    exit
++    exit /b 1
+ )
++
++REM --- 2. 优先走免 UAC 路径（计划任务已注册时） ---
++schtasks /query /tn "%TASK_NAME%" >nul 2>&1
++if %ERRORLEVEL% EQU 0 (
++    schtasks /run /tn "%TASK_NAME%"
++    exit /b 0
++)
++
++REM --- 3. fallback: task not registered, use legacy path (UAC will prompt) ---
++echo [INFO] Scheduled task "%TASK_NAME%" not found. Using legacy path (UAC prompt each run).
++echo        For skip-UAC mode, double-click setup-skip-uac.bat once to install.
++echo.
++powershell -ExecutionPolicy Bypass -File "%CORE_PS1%" -CLIENT_TYPE "%CLIENT_TYPE%"
++endlocal
+diff --git a/lol-launcher-by-origin.bat b/lol-launcher-by-origin.bat
+index 7b48b03..0210d7a 100644
+--- a/lol-launcher-by-origin.bat
++++ b/lol-launcher-by-origin.bat
+@@ -1,16 +1,30 @@
+ @echo off
++setlocal
+ set "CLIENT_TYPE=origin"
++set "TASK_NAME=LolLauncher_Origin"
++set "CORE_PS1=%~dp0core\lol-launcher.ps1"
+ 
+-
+-powershell -ExecutionPolicy Bypass -File "%~dp0core\lol-launcher.ps1" -CLIENT_TYPE "%CLIENT_TYPE%"
+-
+-if %ERRORLEVEL% NEQ 0 (
++REM --- 1. 核心文件存在性校验 ---
++if not exist "%CORE_PS1%" (
+     echo.
+     echo [ENV ERROR]: can't find core file: lol-launcher.ps1
+     echo   Please run the .bat file from its original project folder.
+     echo     Do not move or copy it elsewhere!
+     echo.
+     pause
+-) else (
+-    exit
++    exit /b 1
+ )
++
++REM --- 2. 优先走免 UAC 路径（计划任务已注册时） ---
++schtasks /query /tn "%TASK_NAME%" >nul 2>&1
++if %ERRORLEVEL% EQU 0 (
++    schtasks /run /tn "%TASK_NAME%"
++    exit /b 0
++)
++
++REM --- 3. fallback: task not registered, use legacy path (UAC will prompt) ---
++echo [INFO] Scheduled task "%TASK_NAME%" not found. Using legacy path (UAC prompt each run).
++echo        For skip-UAC mode, double-click setup-skip-uac.bat once to install.
++echo.
++powershell -ExecutionPolicy Bypass -File "%CORE_PS1%" -CLIENT_TYPE "%CLIENT_TYPE%"
++endlocal
+diff --git a/lol-launcher-by-wegame.bat b/lol-launcher-by-wegame.bat
+index 4ecfb0a..eff1a91 100644
+--- a/lol-launcher-by-wegame.bat
++++ b/lol-launcher-by-wegame.bat
+@@ -1,16 +1,30 @@
+ @echo off
++setlocal
+ set "CLIENT_TYPE=wegame"
++set "TASK_NAME=LolLauncher_Wegame"
++set "CORE_PS1=%~dp0core\lol-launcher.ps1"
+ 
+-
+-powershell -ExecutionPolicy Bypass -File "%~dp0core\lol-launcher.ps1" -CLIENT_TYPE "%CLIENT_TYPE%"
+-
+-if %ERRORLEVEL% NEQ 0 (
++REM --- 1. 核心文件存在性校验 ---
++if not exist "%CORE_PS1%" (
+     echo.
+     echo [ENV ERROR]: can't find core file: lol-launcher.ps1
+     echo   Please run the .bat file from its original project folder.
+     echo     Do not move or copy it elsewhere!
+     echo.
+     pause
+-) else (
+-    exit
++    exit /b 1
+ )
++
++REM --- 2. 优先走免 UAC 路径（计划任务已注册时） ---
++schtasks /query /tn "%TASK_NAME%" >nul 2>&1
++if %ERRORLEVEL% EQU 0 (
++    schtasks /run /tn "%TASK_NAME%"
++    exit /b 0
++)
++
++REM --- 3. fallback: task not registered, use legacy path (UAC will prompt) ---
++echo [INFO] Scheduled task "%TASK_NAME%" not found. Using legacy path (UAC prompt each run).
++echo        For skip-UAC mode, double-click setup-skip-uac.bat once to install.
++echo.
++powershell -ExecutionPolicy Bypass -File "%CORE_PS1%" -CLIENT_TYPE "%CLIENT_TYPE%"
++endlocal
+diff --git a/setup-skip-uac.bat b/setup-skip-uac.bat
+new file mode 100644
+index 0000000..2ca6ea6
+--- /dev/null
++++ b/setup-skip-uac.bat
+@@ -0,0 +1,16 @@
++@echo off
++echo.
++echo ============================================================
++echo  LoL Launcher - Skip-UAC Setup (one-time)
++echo ------------------------------------------------------------
++echo  This script will:
++echo    1. Register 3 scheduled tasks (wegame / akari / origin)
++echo    2. Harden config.json ACL
++echo  After setup, lol-launcher-by-*.bat will run without UAC prompts.
++echo ============================================================
++echo.
++echo A UAC prompt will appear. Please click "Yes" to authorize once.
++echo.
++pause
++
++powershell -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -NoExit -File ""%~dp0core\setup-scheduled-tasks.ps1""' -Verb RunAs"
+diff --git a/uninstall-skip-uac.bat b/uninstall-skip-uac.bat
+new file mode 100644
+index 0000000..d0e7f81
+--- /dev/null
++++ b/uninstall-skip-uac.bat
+@@ -0,0 +1,16 @@
++@echo off
++echo.
++echo ============================================================
++echo  LoL Launcher - Skip-UAC Uninstall
++echo ------------------------------------------------------------
++echo  This script will:
++echo    1. Remove 3 scheduled tasks (wegame / akari / origin)
++echo    2. Restore config.json ACL inheritance
++echo  Launcher bats will fall back to legacy path (UAC each run).
++echo ============================================================
++echo.
++echo A UAC prompt will appear. Please click "Yes" to authorize once.
++echo.
++pause
++
++powershell -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -NoExit -File ""%~dp0core\uninstall-scheduled-tasks.ps1""' -Verb RunAs"
+-- 
+2.34.1
+
