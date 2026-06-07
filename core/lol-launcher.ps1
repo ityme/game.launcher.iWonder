@@ -11,39 +11,7 @@ function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
 }
 
 
-# --- 1. 路径初始化与校验 ---
-$ConfigPath = Join-Path $PSScriptRoot "..\config.json"
-
-
-# 获取单层配置值
-function Get-ConfigValue($key) {
-    
-    if (-not (Test-Path $ConfigPath)) { return $null }
-    
-    $data = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
-    return $data.$key
-}
-
-# 设置单层配置值
-function Set-ConfigValue($key, $value) {
-
-    # 读取现有数据或初始化新对象
-    if (Test-Path $ConfigPath) {
-        $data = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
-    } else {
-        $data = New-Object PSCustomObject
-    }
-
-    # 直接赋值（如果 key 包含点号，PowerShell 会将其视为整体字段名）
-    if ($data.psobject.Properties[$key]) {
-        $data.$key = $value
-    } else {
-        $data | Add-Member -MemberType NoteProperty -Name $key -Value $value
-    }
-
-    # 写回文件
-    $data | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
-}
+# --- 1. 路径校验 ---
 
 
 function Validate-LOL-Root-Path($path) {
@@ -53,16 +21,11 @@ function Validate-LOL-Root-Path($path) {
     foreach ($dir in $RequiredDirs) {
         if (-not (Test-Path (Join-Path $path $dir))) { return $false }
     }
-    # 路径合法性检查：不能包含中文
-    if ($path -match "[\u4e00-\u9fa5]") { return $false }
     return $true
 }
 
 function Validate-Akari-Path($path) {
     if (-not (Test-Path $path)) { return $false }
-
-    # 路径合法性检查：不能包含中文
-    if ($path -match "[\u4e00-\u9fa5]") { return $false }
     return $true
 }
 
@@ -73,94 +36,92 @@ function Get-ProcessName($path) {
 }
 
 
-function Set-Config-from-LOL-Root-Path($path) {
-    $ACE_PATH               = Join-Path $path "Game\AntiCheatExpert\SGuard\x64\SGuard64.exe"
-    $LOL_CLIENT_ORIGIN_PATH = Join-Path $path "Launcher\Client.exe"
-    $LOL_CLIENT_WEGAME_PATH = Join-Path $path "WeGameLauncher\launcher.exe"
-    $LOL_RUNNER_PATH        = Join-Path $path "LeagueClient\LeagueClient.exe"
-
-    $ACE_PROCESS               = Get-ProcessName $ACE_PATH
-    $LOL_CLIENT_ORIGIN_PROCESS = Get-ProcessName $LOL_CLIENT_ORIGIN_PATH
-    $LOL_CLIENT_WEGAME_PROCESS = Get-ProcessName $LOL_CLIENT_WEGAME_PATH
-    $LOL_RUNNER_PROCESS        = Get-ProcessName $LOL_RUNNER_PATH
-
-
-    Set-ConfigValue -key "lol_root_path" -value $path
-
-    Set-ConfigValue -key "ace.path" -value $ACE_PATH
-    Set-ConfigValue -key "ace.process" -value $ACE_PROCESS
-    Set-ConfigValue -key "ace.name" -value "反作弊组件 (${ACE_PROCESS}.exe)"
-
-    Set-ConfigValue -key "lol_client.origin.path" -value $LOL_CLIENT_ORIGIN_PATH
-    Set-ConfigValue -key "lol_client.origin.process" -value $LOL_CLIENT_ORIGIN_PROCESS
-    Set-ConfigValue -key "lol_client.origin.name" -value "Origin客户端 (${LOL_CLIENT_ORIGIN_PROCESS}.exe)"
-
-    Set-ConfigValue -key "lol_client.wegame.path" -value $LOL_CLIENT_WEGAME_PATH
-    Set-ConfigValue -key "lol_client.wegame.process" -value $LOL_CLIENT_WEGAME_PROCESS
-    Set-ConfigValue -key "lol_client.wegame.name" -value "WeGame客户端 (${LOL_CLIENT_WEGAME_PROCESS}.exe)"
-
-    Set-ConfigValue -key "lol_runner.path" -value $LOL_RUNNER_PATH
-    Set-ConfigValue -key "lol_runner.process" -value $LOL_RUNNER_PROCESS
-    Set-ConfigValue -key "lol_runner.name" -value "英雄联盟主程序 (${LOL_RUNNER_PROCESS}.exe)"
+function Get-SortedDrives() {
+    $allDrives = (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\'}).Root
+    $priority  = @('D:\', 'C:\', 'E:\', 'F:\')
+    $sorted    = $priority | Where-Object { $allDrives -contains $_ }
+    $sorted   += $allDrives | Where-Object { $priority -notcontains $_ } | Sort-Object
+    return $sorted
 }
 
+function Auto-Detect-LOL-Root-Path() {
+    Log-State "自动检测" "正在搜索英雄联盟安装目录, 请稍候..." "Yellow"
 
-function Set-Config-from-Akari-Path($path) {
-    $AKARI_PROCESS = Get-ProcessName $path
+    $drives = Get-SortedDrives
+    foreach ($drive in $drives) {
+        $results = & where.exe /R $drive LeagueClient.exe 2>$null
+        foreach ($result in $results) {
+            if (-not $result) { continue }
+            # LeagueClient.exe 路径: <root>\LeagueClient\LeagueClient.exe，向上两级即为根目录
+            $rootPath = Split-Path (Split-Path $result.Trim() -Parent) -Parent
+            if (Validate-LOL-Root-Path $rootPath) {
+                Log-State "检测成功" "已找到英雄联盟根目录: $rootPath" "Green"
+                return $rootPath
+            }
+        }
+    }
 
-    Set-ConfigValue -key "akari.path" -value $path
-    Set-ConfigValue -key "akari.process" -value $AKARI_PROCESS
-    Set-ConfigValue -key "akari.name" -value "Akari客户端 (${AKARI_PROCESS}.exe)"
+    Log-State "检测失败" "未能自动找到英雄联盟安装目录, 请手动输入。" "Red"
+    return Prompt-For-LOL-Root-Path
 }
 
+function Auto-Detect-Akari-Path() {
+    Log-State "自动检测" "正在搜索 Akari 客户端, 请稍候..." "Yellow"
+
+    $drives = Get-SortedDrives
+    foreach ($drive in $drives) {
+        $results = & where.exe /R $drive LeagueAkari.exe 2>$null
+        foreach ($result in $results) {
+            if (-not $result) { continue }
+            $path = $result.Trim()
+            if (Validate-Akari-Path $path) {
+                Log-State "检测成功" "已找到 Akari 客户端: $path" "Green"
+                return $path
+            }
+        }
+    }
+
+    Log-State "检测失败" "未能自动找到 Akari 客户端, 请手动输入。" "Red"
+    return Prompt-For-Akari-Path
+}
 
 function Prompt-For-LOL-Root-Path() {
     while ($true) {
-        Write-Host "`n[配置引导] 请输入英雄联盟(LOL)根目录路径：" -ForegroundColor Yellow
+        Log-State "配置引导" "请输入英雄联盟(LOL)根目录路径：" "Yellow"
         Write-Host "  示例: D:\Tencent\WeGameApps\League of Legends" -ForegroundColor Gray
-        Write-Host "  要求: 路径须 [完整] 且路径中 [不可包含中文], 请修改至符合要求后, 再进行后续操作" -ForegroundColor Cyan
-        
+        Write-Host "  要求: 路径须指向英雄联盟的根目录 (包含 Game、Launcher、LeagueClient 等子目录)" -ForegroundColor Cyan
+
         $NewPath = (Read-Host ">> 路径").Trim()
-        
+
         if (Validate-LOL-Root-Path $NewPath) {
-            Set-ConfigValue -key "LOL_ROOT_PATH" -value $NewPath
-            Write-Host "[配置成功] 英雄联盟(LOL)根目录相关路径 已写入配置文件。" -ForegroundColor Green
+            Log-State "配置成功" "英雄联盟(LOL)根目录路径已确认。" "Green"
             return $NewPath
         } else {
-            Write-Host "[校验失败] 路径无效：请检查目录完整性或是否存在中文。" -ForegroundColor Red
+            Log-State "校验失败" "路径无效：请检查目录是否完整。" "Red"
         }
     }
 }
 
 function Prompt-For-Akari-Path() {
     while ($true) {
-        Write-Host "`n[配置引导] 请输入 Akari 客户端路径：" -ForegroundColor Yellow
+        Log-State "配置引导" "请输入 Akari 客户端路径：" "Yellow"
         Write-Host "  示例: D:\League.Akari-1.4.3-win\LeagueAkari.exe" -ForegroundColor Gray
-        Write-Host "  要求: 路径须 [完整] 且路径中 [不可包含中文], 请修改至符合要求后, 再进行后续操作" -ForegroundColor Cyan
-        
+        Write-Host "  要求: 路径须指向 LeagueAkari.exe 可执行文件" -ForegroundColor Cyan
+
         $NewPath = (Read-Host ">> 路径").Trim()
-        
-        if (Test-Path $NewPath) {
-            Set-ConfigValue -key "AKARI_PATH" -value $NewPath
-            Write-Host "[配置成功] Akari客户端相关路径 已写入配置文件。" -ForegroundColor Green
+
+        if (Validate-Akari-Path $NewPath) {
+            Log-State "配置成功" "Akari 客户端路径已确认。" "Green"
             return $NewPath
         } else {
-            Write-Host "[校验失败] 路径无效：请检查目录完整性或是否存在中文。" -ForegroundColor Red
+            Log-State "校验失败" "路径无效：请检查文件是否存在。" "Red"
         }
     }
 }
 
 # 逻辑触发
-# LOL_ROOT_PATH 校验与配置
-$LOL_ROOT_PATH = Get-ConfigValue -key "LOL_ROOT_PATH"
-if (-not $LOL_ROOT_PATH -or -not (Validate-LOL-Root-Path $LOL_ROOT_PATH)) {
-    if ($LOL_ROOT_PATH) {
-        Write-Host "[配置错误] 检测到已保存的路径无效或包含非法字符。" -ForegroundColor Red
-    } else {
-        Write-Host "[初始设置] 未检测到 英雄联盟(LOL)根目录相关路径 配置文件。" -ForegroundColor Yellow
-    }
-    $LOL_ROOT_PATH = Prompt-For-LOL-Root-Path
-}
+# LOL_ROOT_PATH 自动检测
+$LOL_ROOT_PATH = Auto-Detect-LOL-Root-Path
 
 $ACE_PATH               = Join-Path $LOL_ROOT_PATH "Game\AntiCheatExpert\SGuard\x64\SGuard64.exe"
 $ACE_PROCESS            = Get-ProcessName $ACE_PATH
@@ -171,18 +132,9 @@ $LOL_RUNNER_PROCESS     = Get-ProcessName $LOL_RUNNER_PATH
 $LOL_RUNNER_NAME        = "英雄联盟主程序 (${LOL_RUNNER_PROCESS}.exe)"
 
 
-# Akari路径 校验与配置（仅在选择 Akari 模式时触发）
+# Akari路径 自动检测（仅在选择 Akari 模式时触发）
 if ($CLIENT_TYPE -eq "akari") {
-    $AKARI_PATH = Get-ConfigValue -key "AKARI_PATH"
-    if (-not $AKARI_PATH  -or -not (Validate-Akari-Path $AKARI_PATH)) {
-
-        if ($AKARI_PATH) {
-            Write-Host "[配置错误] 检测到已保存的路径无效或包含非法字符。" -ForegroundColor Red
-        } else {
-            Write-Host "[初始设置] 未检测到 Akari客户端相关路径 配置文件。" -ForegroundColor Yellow
-        }
-        $AKARI_PATH = Prompt-For-Akari-Path
-    }
+    $AKARI_PATH = Auto-Detect-Akari-Path
 
     $LOL_CLIENT_PATH    = $AKARI_PATH
     $LOL_CLIENT_PROCESS = Get-ProcessName $LOL_CLIENT_PATH
@@ -204,7 +156,7 @@ if ($CLIENT_TYPE -eq "akari") {
     $LOL_CLIENT_NAME    = "Origin客户端 (${LOL_CLIENT_PROCESS}.exe)"
 
 } else {
-    Write-Host "[参数错误] 无效的客户端类型: '$CLIENT_TYPE', 将默认使用 Origin 模式。" -ForegroundColor Yellow
+    Log-State "参数错误" "无效的客户端类型: '$CLIENT_TYPE', 将默认使用 Origin 模式。" "Yellow"
     $LOL_CLIENT_PATH    = Join-Path $LOL_ROOT_PATH "Launcher\Client.exe"
     $LOL_CLIENT_PROCESS = Get-ProcessName $LOL_CLIENT_PATH
     $LOL_CLIENT_NAME    = "Origin客户端 (${LOL_CLIENT_PROCESS}.exe)"
