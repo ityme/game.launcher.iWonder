@@ -30,6 +30,26 @@ function Validate-Akari-Path($path) {
 }
 
 
+# --- 注册表缓存 ---
+$REG_KEY = "HKCU:\Software\iWonder\LOLLauncher"
+
+function Get-Registry-Path([string]$ValueName) {
+    try {
+        $val = Get-ItemProperty -Path $REG_KEY -Name $ValueName -ErrorAction Stop
+        return $val.$ValueName
+    } catch {
+        return $null
+    }
+}
+
+function Save-Registry-Path([string]$ValueName, [string]$Path) {
+    if (-not (Test-Path $REG_KEY)) {
+        New-Item -Path $REG_KEY -Force | Out-Null
+    }
+    Set-ItemProperty -Path $REG_KEY -Name $ValueName -Value $Path
+}
+
+
 # --- 2. 辅助函数与进程名提取 ---
 function Get-ProcessName($path) {
     return [System.IO.Path]::GetFileNameWithoutExtension($path)
@@ -45,6 +65,16 @@ function Get-SortedDrives() {
 }
 
 function Auto-Detect-LOL-Root-Path() {
+    $cached = Get-Registry-Path "LOLRootPath"
+    if ($cached) {
+        Log-State "读取缓存" "已从注册表读取路径: $cached" "DarkGray"
+        if (Validate-LOL-Root-Path $cached) {
+            Log-State "命中缓存" "英雄联盟根目录已确认: $cached" "Green"
+            return $cached
+        }
+        Log-State "缓存失效" "注册表路径已失效, 将重新扫描。" "Yellow"
+    }
+
     Log-State "自动检测" "正在搜索英雄联盟安装目录, 请稍候..." "Yellow"
 
     $drives = Get-SortedDrives
@@ -56,6 +86,8 @@ function Auto-Detect-LOL-Root-Path() {
             $rootPath = Split-Path (Split-Path $result.Trim() -Parent) -Parent
             if (Validate-LOL-Root-Path $rootPath) {
                 Log-State "检测成功" "已找到英雄联盟根目录: $rootPath" "Green"
+                Save-Registry-Path "LOLRootPath" $rootPath
+                Log-State "写入缓存" "路径已写入注册表, 下次启动将优先读取。" "DarkGray"
                 return $rootPath
             }
         }
@@ -66,6 +98,16 @@ function Auto-Detect-LOL-Root-Path() {
 }
 
 function Auto-Detect-Akari-Path() {
+    $cached = Get-Registry-Path "AkariPath"
+    if ($cached) {
+        Log-State "读取缓存" "已从注册表读取路径: $cached" "DarkGray"
+        if (Validate-Akari-Path $cached) {
+            Log-State "命中缓存" "Akari 客户端路径已确认: $cached" "Green"
+            return $cached
+        }
+        Log-State "缓存失效" "注册表路径已失效, 将重新扫描。" "Yellow"
+    }
+
     Log-State "自动检测" "正在搜索 Akari 客户端, 请稍候..." "Yellow"
 
     $drives = Get-SortedDrives
@@ -76,6 +118,8 @@ function Auto-Detect-Akari-Path() {
             $path = $result.Trim()
             if (Validate-Akari-Path $path) {
                 Log-State "检测成功" "已找到 Akari 客户端: $path" "Green"
+                Save-Registry-Path "AkariPath" $path
+                Log-State "写入缓存" "路径已写入注册表, 下次启动将优先读取。" "DarkGray"
                 return $path
             }
         }
