@@ -10,6 +10,18 @@ function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
     Write-Host ("[{0}] {1}" -f $Tag, $Msg) -ForegroundColor $Color
 }
 
+function Show-WeGame-Mode-Notice() {
+    Write-Host ""
+    Log-State "失效警告" "WeGame 模式仅保留兼容入口, 当前不推荐用于减少掉帧。" "Yellow"
+    Log-State "失效警告" "近期 WeGame 更新后, 疑似会结束脚本提前启动的 SGuard64.exe, 再重新拉起 SGuard64.exe + SGuardSvc64.exe。" "Yellow"
+    Log-State "失效警告" "这种情况下本脚本的 ACE 启动顺序优化可能失效, 建议优先使用 Origin 或 Akari 模式。" "Yellow"
+    Write-Host ""
+}
+
+if ($CLIENT_TYPE -eq "wegame") {
+    Show-WeGame-Mode-Notice
+}
+
 
 # --- 1. 路径校验 ---
 
@@ -93,8 +105,9 @@ function Auto-Detect-LOL-Root-Path() {
         }
     }
 
-    Log-State "检测失败" "未能自动找到英雄联盟安装目录, 请手动输入。" "Red"
-    return Prompt-For-LOL-Root-Path
+    Log-State "检测失败" "未能自动找到英雄联盟安装目录。" "Red"
+    Write-Host "  请确认游戏已完整安装, 且目录包含 Cross、Game、Launcher、LeagueClient 子目录。" -ForegroundColor Cyan
+    exit 1
 }
 
 function Auto-Detect-Akari-Path() {
@@ -125,42 +138,10 @@ function Auto-Detect-Akari-Path() {
         }
     }
 
-    Log-State "检测失败" "未能自动找到 Akari 客户端, 请手动输入。" "Red"
-    return Prompt-For-Akari-Path
-}
-
-function Prompt-For-LOL-Root-Path() {
-    while ($true) {
-        Log-State "配置引导" "请输入英雄联盟(LOL)根目录路径：" "Yellow"
-        Write-Host "  示例: D:\Tencent\WeGameApps\League of Legends" -ForegroundColor Gray
-        Write-Host "  要求: 路径须指向英雄联盟的根目录 (包含 Game、Launcher、LeagueClient 等子目录)" -ForegroundColor Cyan
-
-        $NewPath = (Read-Host ">> 路径").Trim()
-
-        if (Validate-LOL-Root-Path $NewPath) {
-            Log-State "配置成功" "英雄联盟(LOL)根目录路径已确认。" "Green"
-            return $NewPath
-        } else {
-            Log-State "校验失败" "路径无效：请检查目录是否完整。" "Red"
-        }
-    }
-}
-
-function Prompt-For-Akari-Path() {
-    while ($true) {
-        Log-State "配置引导" "请输入 Akari 客户端路径：" "Yellow"
-        Write-Host "  示例: D:\League.Akari-1.4.3-win\LeagueAkari.exe" -ForegroundColor Gray
-        Write-Host "  要求: 路径须指向 LeagueAkari.exe 可执行文件" -ForegroundColor Cyan
-
-        $NewPath = (Read-Host ">> 路径").Trim()
-
-        if (Validate-Akari-Path $NewPath) {
-            Log-State "配置成功" "Akari 客户端路径已确认。" "Green"
-            return $NewPath
-        } else {
-            Log-State "校验失败" "路径无效：请检查文件是否存在。" "Red"
-        }
-    }
+    Log-State "检测失败" "未能自动找到 Akari 客户端。" "Red"
+    Write-Host "  如尚未安装 Akari 助手, 请先前往官方项目页下载并安装。" -ForegroundColor Yellow
+    Write-Host "  官网: https://github.com/LeagueAkari/LeagueAkari/" -ForegroundColor Cyan
+    exit 1
 }
 
 # 逻辑触发
