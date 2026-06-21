@@ -38,6 +38,7 @@ jobs:
 
       - name: build temporary workspace
         run: |
+          mv assets _temp_workspace/
           mv core _temp_workspace/
           mv *.bat _temp_workspace/
           mv LICENSE _temp_workspace/
