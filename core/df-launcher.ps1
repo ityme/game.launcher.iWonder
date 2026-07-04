@@ -1,6 +1,15 @@
 ﻿# ==========================================================
 # Delta Force Launcher
+# ClientType: origin, steam
 # ==========================================================
+param (
+    [string]$CLIENT_TYPE = "origin"
+)
+
+if ([string]::IsNullOrWhiteSpace($CLIENT_TYPE)) {
+    $CLIENT_TYPE = "origin"
+}
+$CLIENT_TYPE = $CLIENT_TYPE.Trim().ToLowerInvariant()
 
 function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
     Write-Host ("[{0}] {1}" -f $Tag, $Msg) -ForegroundColor $Color
@@ -9,9 +18,13 @@ function Log-State([string]$Tag, [string]$Msg, [ConsoleColor]$Color = "Gray") {
 
 # --- 1. 路径校验 ---
 
-function Validate-Delta-Root-Path($path) {
+function Validate-Delta-Root-Path($path, [string]$ClientType = "origin") {
     if (-not (Test-Path $path)) { return $false }
-    $RequiredDirs = "DeltaForce", "Engine", "TCLS"
+    $RequiredDirs = "DeltaForce", "Engine"
+    if ($ClientType -eq "origin") {
+        $RequiredDirs += "TCLS"
+    }
+
     foreach ($dir in $RequiredDirs) {
         if (-not (Test-Path (Join-Path $path $dir))) { return $false }
     }
@@ -26,9 +39,14 @@ function Validate-Delta-Launcher-Path($path) {
     return ([System.IO.Path]::GetFileName($path) -ieq "delta_force_launcher.exe")
 }
 
+function Validate-Steam-Path($path) {
+    if (-not (Test-Path $path)) { return $false }
+    return ([System.IO.Path]::GetFileName($path) -ieq "steam.exe")
+}
+
 
 # --- 注册表缓存 ---
-$REG_KEY = "HKCU:\Software\iWonder\LOLLauncher"
+$REG_KEY = "HKCU:\Software\iWonder\GameLauncher"
 
 function Get-Registry-Path([string]$ValueName) {
     try {
@@ -61,11 +79,11 @@ function Get-SortedDrives() {
     return $sorted
 }
 
-function Auto-Detect-Delta-Root-Path() {
+function Auto-Detect-Delta-Root-Path([string]$ClientType) {
     $cached = Get-Registry-Path "DeltaRootPath"
     if ($cached) {
         Log-State "读取缓存" "已从注册表读取路径: $cached" "DarkGray"
-        if (Validate-Delta-Root-Path $cached) {
+        if (Validate-Delta-Root-Path $cached $ClientType) {
             Log-State "命中缓存" "Delta Force 根目录已确认: $cached" "Green"
             return $cached
         }
@@ -82,7 +100,7 @@ function Auto-Detect-Delta-Root-Path() {
             # DeltaForceClient-Win64-Shipping.exe 路径:
             # <root>\DeltaForce\Binaries\Win64\DeltaForceClient-Win64-Shipping.exe
             $rootPath = Split-Path (Split-Path (Split-Path (Split-Path $result.Trim() -Parent) -Parent) -Parent) -Parent
-            if (Validate-Delta-Root-Path $rootPath) {
+            if (Validate-Delta-Root-Path $rootPath $ClientType) {
                 Log-State "检测成功" "已找到 Delta Force 根目录: $rootPath" "Green"
                 Save-Registry-Path "DeltaRootPath" $rootPath
                 Log-State "写入缓存" "路径已写入注册表, 下次启动将优先读取。" "DarkGray"
@@ -92,7 +110,11 @@ function Auto-Detect-Delta-Root-Path() {
     }
 
     Log-State "检测失败" "未能自动找到 Delta Force 安装目录。" "Red"
-    Write-Host "  请确认游戏已完整安装, 且目录包含 DeltaForce、Engine、TCLS 子目录。" -ForegroundColor Cyan
+    if ($ClientType -eq "origin") {
+        Write-Host "  请确认游戏已完整安装, 且目录包含 DeltaForce、Engine、TCLS 子目录。" -ForegroundColor Cyan
+    } else {
+        Write-Host "  请确认 Steam 版 Delta Force 已完整安装, 且目录包含 DeltaForce、Engine 子目录。" -ForegroundColor Cyan
+    }
     exit 1
 }
 
@@ -130,9 +152,103 @@ function Auto-Detect-Delta-Launcher-Path() {
     exit 1
 }
 
+function Get-Steam-Candidate-Paths() {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    try {
+        $steamProcess = Get-Process -Name "steam" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($steamProcess -and $steamProcess.Path) {
+            $candidates.Add($steamProcess.Path)
+        }
+    } catch {
+    }
+
+    $registryKeys = @(
+        "HKCU:\Software\Valve\Steam",
+        "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam",
+        "HKLM:\SOFTWARE\Valve\Steam"
+    )
+
+    foreach ($key in $registryKeys) {
+        try {
+            $props = Get-ItemProperty -Path $key -ErrorAction Stop
+            foreach ($name in @("SteamExe", "InstallPath", "SteamPath")) {
+                $value = $props.$name
+                if ([string]::IsNullOrWhiteSpace($value)) { continue }
+
+                if ([System.IO.Path]::GetFileName($value) -ieq "steam.exe") {
+                    $candidates.Add($value)
+                } else {
+                    $candidates.Add((Join-Path $value "steam.exe"))
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+
+    if ($env:ProgramFiles) {
+        $candidates.Add((Join-Path $env:ProgramFiles "Steam\steam.exe"))
+    }
+
+    $programFilesX86 = ${env:ProgramFiles(x86)}
+    if ($programFilesX86) {
+        $candidates.Add((Join-Path $programFilesX86 "Steam\steam.exe"))
+    }
+
+    return ($candidates | Select-Object -Unique)
+}
+
+function Auto-Detect-Steam-Path() {
+    $cached = Get-Registry-Path "SteamPath"
+    if ($cached) {
+        Log-State "读取缓存" "已从注册表读取路径: $cached" "DarkGray"
+        if (Validate-Steam-Path $cached) {
+            Log-State "命中缓存" "Steam 客户端路径已确认: $cached" "Green"
+            return $cached
+        }
+        Log-State "缓存失效" "注册表路径已失效, 将重新扫描。" "Yellow"
+    }
+
+    Log-State "自动检测" "正在搜索 Steam 客户端, 请稍候..." "Yellow"
+
+    foreach ($candidate in Get-Steam-Candidate-Paths) {
+        if (Validate-Steam-Path $candidate) {
+            Log-State "检测成功" "已找到 Steam 客户端: $candidate" "Green"
+            Save-Registry-Path "SteamPath" $candidate
+            Log-State "写入缓存" "路径已写入注册表, 下次启动将优先读取。" "DarkGray"
+            return $candidate
+        }
+    }
+
+    $drives = Get-SortedDrives
+    foreach ($drive in $drives) {
+        $results = & where.exe /R $drive steam.exe 2>$null
+        foreach ($result in $results) {
+            if (-not $result) { continue }
+            $path = $result.Trim()
+            if (Validate-Steam-Path $path) {
+                Log-State "检测成功" "已找到 Steam 客户端: $path" "Green"
+                Save-Registry-Path "SteamPath" $path
+                Log-State "写入缓存" "路径已写入注册表, 下次启动将优先读取。" "DarkGray"
+                return $path
+            }
+        }
+    }
+
+    Log-State "检测失败" "未能自动找到 Steam 客户端。" "Red"
+    Write-Host "  请确认 Steam 已安装, 或先手动启动 Steam 后重新运行脚本。" -ForegroundColor Cyan
+    exit 1
+}
+
+if (($CLIENT_TYPE -ne "origin") -and ($CLIENT_TYPE -ne "steam")) {
+    Log-State "参数错误" "无效的客户端类型: '$CLIENT_TYPE', 将默认使用 Origin 模式。" "Yellow"
+    $CLIENT_TYPE = "origin"
+}
+
 
 # --- 3. 路径初始化 ---
-$DELTA_ROOT_PATH = Auto-Detect-Delta-Root-Path
+$DELTA_ROOT_PATH = Auto-Detect-Delta-Root-Path $CLIENT_TYPE
 
 $DELTA_ACE_PATH        = Join-Path $DELTA_ROOT_PATH "DeltaForce\Binaries\Win64\AntiCheatExpert\SGuard\x64\SGuard64.exe"
 $DELTA_ACE_DIR         = Split-Path $DELTA_ACE_PATH -Parent
@@ -143,10 +259,17 @@ $DELTA_RUNNER_PATH     = Join-Path $DELTA_ROOT_PATH "DeltaForce\Binaries\Win64\D
 $DELTA_RUNNER_PROCESS  = Get-ProcessName $DELTA_RUNNER_PATH
 $DELTA_RUNNER_NAME     = "Delta Force 主程序 (${DELTA_RUNNER_PROCESS}.exe)"
 
-$DELTA_LAUNCHER_PATH    = Auto-Detect-Delta-Launcher-Path
+if ($CLIENT_TYPE -eq "steam") {
+    $DELTA_LAUNCHER_PATH = Auto-Detect-Steam-Path
+    $DELTA_LAUNCHER_NAME_PREFIX = "Steam 客户端"
+} else {
+    $DELTA_LAUNCHER_PATH = Auto-Detect-Delta-Launcher-Path
+    $DELTA_LAUNCHER_NAME_PREFIX = "Delta Force 启动器"
+}
+
 $DELTA_LAUNCHER_DIR     = Split-Path $DELTA_LAUNCHER_PATH -Parent
 $DELTA_LAUNCHER_PROCESS = Get-ProcessName $DELTA_LAUNCHER_PATH
-$DELTA_LAUNCHER_NAME    = "Delta Force 启动器 (${DELTA_LAUNCHER_PROCESS}.exe)"
+$DELTA_LAUNCHER_NAME    = "$DELTA_LAUNCHER_NAME_PREFIX (${DELTA_LAUNCHER_PROCESS}.exe)"
 
 
 # --- 4. 环境清理阶段 ---
@@ -184,7 +307,11 @@ while ($true) {
             continue
         }
 
-        Log-State "正在引导" "已启动 $DELTA_LAUNCHER_NAME, 正在等待用户登录并加载 $DELTA_RUNNER_NAME..." "DarkGray"
+        if ($CLIENT_TYPE -eq "steam") {
+            Log-State "正在引导" "已启动 $DELTA_LAUNCHER_NAME, 请在 Steam 中手动启动 Delta Force, 正在等待加载 $DELTA_RUNNER_NAME..." "DarkGray"
+        } else {
+            Log-State "正在引导" "已启动 $DELTA_LAUNCHER_NAME, 正在等待用户登录并加载 $DELTA_RUNNER_NAME..." "DarkGray"
+        }
         Start-Sleep -Seconds 2
         continue
     }

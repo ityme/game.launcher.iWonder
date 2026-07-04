@@ -24,7 +24,7 @@
 | 游戏 | 简称 | 支持入口 |
 | :--- | :---: | :--- |
 | **英雄联盟** | LOL | 官方原生客户端 / Akari / WeGame（保留兼容，不推荐） |
-| **三角洲行动** | DF | 官方启动器 |
+| **三角洲行动** | DF | 官方启动器 / Steam |
 
 ---
 
@@ -37,6 +37,7 @@ game.launcher.iWonder/
 ├── lol-launcher-by-wegame.bat  # 🚀 LOL：WeGame 客户端模式（不推荐）
 ├── lol-launcher-by-akari.bat   # 🚀 LOL：Akari 客户端模式
 ├── df-launcher-by-origin.bat   # 🚀 DF：官方启动器模式
+├── df-launcher-by-steam.bat    # 🚀 DF：Steam 客户端模式
 ├── README.md                   # 📄 本说明文档
 ├── assets/
 │   └── icon/
@@ -68,16 +69,17 @@ game.launcher.iWonder/
 
 | 位置 | 快捷方式 |
 | :--- | :--- |
-| **桌面** | `lol-origin` / `lol-akari` / `df-origin` |
-| **开始菜单** | `game.launcher.iWonder\lol-origin` / `game.launcher.iWonder\lol-akari` / `game.launcher.iWonder\df-origin` |
+| **桌面** | `lol-origin` / `lol-akari` / `df-origin` / `df-steam` |
+| **开始菜单** | `game.launcher.iWonder\lol-origin` / `game.launcher.iWonder\lol-akari` / `game.launcher.iWonder\df-origin` / `game.launcher.iWonder\df-steam` |
 
 | 快捷方式 | 实际启动模式 |
 | :--- | :--- |
 | `lol-origin` | LOL：官方原生客户端模式 |
 | `lol-akari` | LOL：Akari 客户端模式 |
 | `df-origin` | DF：官方启动器模式 |
+| `df-steam` | DF：Steam 客户端模式 |
 
-> 📌 **后续用法**：创建完成后，日常启动游戏只需要双击桌面图标，或按 `Win` 键搜索 `lol-origin`、`lol-akari`、`df-origin`。
+> 📌 **后续用法**：创建完成后，日常启动游戏只需要双击桌面图标，或按 `Win` 键搜索 `lol-origin`、`lol-akari`、`df-origin`、`df-steam`。
 
 > 🔁 **路径说明**：快捷方式会指向当前项目目录。若之后移动了整个项目文件夹，请重新双击 `创建桌面图标.bat`，快捷方式会自动刷新到新路径。
 
@@ -95,8 +97,11 @@ game.launcher.iWonder/
 | **B** | `lol-launcher-by-wegame.bat` | LOL：保留给依赖 WeGame 的用户使用，但当前不推荐 |
 | **C** | `lol-launcher-by-akari.bat` | LOL：使用 Akari 客户端，追求更轻量的启动体验 |
 | **D** | `df-launcher-by-origin.bat` | DF：通过三角洲行动官方启动器进入游戏 |
+| **E** | `df-launcher-by-steam.bat` | DF：启动 Steam，随后由用户在 Steam 中手动启动三角洲行动 |
 
 > ⚠️ **WeGame 模式说明**：近期 WeGame 更新后，疑似会结束脚本提前启动的 `SGuard64.exe`，随后由 WeGame 重新拉起 `SGuard64.exe` 与 `SGuardSvc64.exe`。这会绕过本脚本对 ACE 启动顺序的优化，导致减少掉帧的效果失效。因此 WeGame 入口仍然提供，但建议优先使用 Origin 或 Akari 模式。
+
+> 📌 **Steam 模式说明**：DF Steam 模式会先启动游戏内置 ACE，再启动 Steam 客户端；Steam 打开后，需要你在 Steam 中手动启动三角洲行动。
 
 ---
 
@@ -104,7 +109,7 @@ game.launcher.iWonder/
 
 双击运行后，脚本将**自动完成所有操作**，关注控制台窗口的输出提示：
 
-1. **[自动检测]** — 脚本自动扫描全盘，找到对应游戏安装目录（LOL 使用 Akari 模式时也会检测 Akari 客户端；DF 会额外检测官方启动器）。无需任何手动配置。
+1. **[自动检测]** — 脚本自动扫描全盘，找到对应游戏安装目录（LOL 使用 Akari 模式时也会检测 Akari 客户端；DF 会根据模式额外检测官方启动器或 Steam 客户端）。无需任何手动配置。
 2. **[环境检查]** — 若出现黄色警告，说明存在残留的游戏或 ACE 进程，请先手动关闭后重试。
 3. **[执行启动]** — 脚本自动拉起游戏内置的 ACE 2 反作弊组件。
 4. **[正在引导]** — 出现此提示后，立即在对应游戏登录器中完成登录操作（登录账号 → 选择区服/模式 → 进入游戏）。
@@ -122,7 +127,7 @@ game.launcher.iWonder/
 | **快捷方式打不开？** | 若移动过项目目录，请重新双击 `创建桌面图标.bat`。快捷方式会自动更新到当前目录。 |
 | **LOL 提示"[检测失败]"** | 确认英雄联盟已完整安装，且目录包含 `Game`、`Cross`、`Launcher`、`LeagueClient` 子目录。修复安装后重新运行脚本即可。 |
 | **为什么不推荐 WeGame 模式？** | WeGame 更新后，疑似会接管并重启 ACE 相关进程，使脚本提前启动 `SGuard64.exe` 的优化失效。该入口仅为兼容使用习惯而保留。 |
-| **DF 提示"[检测失败]"** | 确认三角洲行动已完整安装，且官方启动器 `delta_force_launcher.exe` 已单独安装。若缺少启动器，请前往 `https://df.qq.com/` 下载后重新运行脚本。 |
+| **DF 提示"[检测失败]"** | 确认三角洲行动已完整安装；官方模式需单独安装 `delta_force_launcher.exe`，Steam 模式需已安装 Steam 客户端。 |
 | **提示"无法启动组件"** | 右键点击 `.bat` 文件，选择 **"以管理员身份运行"**。 |
 
 ---

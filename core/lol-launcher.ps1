@@ -43,7 +43,7 @@ function Validate-Akari-Path($path) {
 
 
 # --- 注册表缓存 ---
-$REG_KEY = "HKCU:\Software\iWonder\LOLLauncher"
+$REG_KEY = "HKCU:\Software\iWonder\GameLauncher"
 
 function Get-Registry-Path([string]$ValueName) {
     try {

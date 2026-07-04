@@ -67,6 +67,11 @@ $shortcuts = @(
         Name = "df-origin"
         Target = "df-launcher-by-origin.bat"
         Icon = "assets\icon\df.ico"
+    },
+    @{
+        Name = "df-steam"
+        Target = "df-launcher-by-steam.bat"
+        Icon = "assets\icon\df.ico"
     }
 )
 
