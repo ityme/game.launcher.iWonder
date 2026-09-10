@@ -29,7 +29,7 @@ if ($CLIENT_TYPE -eq "wegame") {
 function Validate-LOL-Root-Path($path) {
     if (-not (Test-Path $path)) { return $false }
     # 校验必要子目录完整性
-    $RequiredDirs = "Cross", "Game", "Launcher", "LeagueClient"
+    $RequiredDirs = "Game", "Launcher", "LeagueClient"
     foreach ($dir in $RequiredDirs) {
         if (-not (Test-Path (Join-Path $path $dir))) { return $false }
     }
@@ -106,7 +106,7 @@ function Auto-Detect-LOL-Root-Path() {
     }
 
     Log-State "检测失败" "未能自动找到英雄联盟安装目录。" "Red"
-    Write-Host "  请确认游戏已完整安装, 且目录包含 Cross、Game、Launcher、LeagueClient 子目录。" -ForegroundColor Cyan
+    Write-Host "  请确认游戏已完整安装, 且目录包含 Game、Launcher、LeagueClient 子目录。" -ForegroundColor Cyan
     exit 1
 }
 
